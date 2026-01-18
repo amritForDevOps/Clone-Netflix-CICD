@@ -1,0 +1,59 @@
+pipeline{
+    agent any
+    enviroment{
+        AWS_REGION= "us-east-1"
+        AWS_ACCOUNT_ID= "124355676261"
+        EKS_CLUSTER_NAME= "netflix-clone-cluster"
+        ECR_NETFLIX= "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/netflix-clone"
+        IMAGE_TAG = "build-${env.BUILD_NUMBER}"
+    }
+    stages{
+        stage('Checkout Code'){
+            steps{
+               git branch: 'main',
+                url: 'https://github.com/amritForDevOps/Netflix-clone-CiCD.git',
+                credentialsId: 'git-creds'
+            }
+        }
+        stage('Build & Push Image'){
+            steps{
+                withCredentials([[$class: 'UsernamePasswordMultiBinding', credentialsId: 'aws-creds', usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY']]) {
+            sh '''
+                export AWS_REGION=${AWS_REGION}
+                export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+                export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+
+                aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+
+                # Build frontend
+                docker build -t ${ECR_NETFLIX}:${IMAGE_TAG} ../.
+                docker push ${ECR_NETFLIX}:${IMAGE_TAG}
+            '''
+            }
+        }
+        }
+        stage('Deploy to EKS'){
+            steps{
+        withCredentials([[$class: 'UsernamePasswordMultiBinding', credentialsId: 'aws-creds', usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY']]) {
+          sh '''
+            export AWS_REGION=${AWS_REGION}
+            export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+            export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+
+            aws eks update-kubeconfig --region ${AWS_REGION} --name ${EKS_CLUSTER_NAME}
+
+            # Update deployments using kubectl set image for safer updates
+            kubectl set image deployment/netflix-clone netflix=${ECR_NETFLIX}:${IMAGE_TAG} --namespace default || true
+            # Apply manifests (in case new resources added)
+            kubectl apply -f k8s/base/
+          '''                
+            }
+        }
+        }
+        post{
+            always{
+                echo "Pipeline finished: ${currentBuild.fullDisplayName}"
+            }
+        }
+    }
+}
